@@ -5,10 +5,12 @@
 // - POST /admin/policies/maintenance     -> set/clear maintenance window (writes to KV)
 // - POST /admin/policies/tool-approval   -> toggle tool invocation approval requirement (writes to KV)
 // - GET  /admin/policies/audit-log       -> list recent governance.audit entries from SUBSTRATE_KV
+// - GET  /admin/policies/criticality     -> list canonical criticality mappings + runtime overrides
 
 import { Router } from 'hono'
 import type { Env } from '../src/index'
 import { policyRegistry } from './policies'
+import { listMappings } from './criticalityRegistry'
 
 const admin = new Router()
 
@@ -39,6 +41,16 @@ admin.get('/policies', async (c) => {
   } catch (err) {
     // Fall back to in-memory view if KV unavailable
     return c.json({ ok: true, policies: list, knobs: { blockedWorkspaces: [], maintenance: null, tool: true }, warning: String(err) })
+  }
+})
+
+// GET /admin/policies/criticality
+admin.get('/policies/criticality', async (c) => {
+  try {
+    const mappings = listMappings()
+    return c.json({ ok: true, mappings })
+  } catch (err) {
+    return c.json({ ok: false, error: String(err) }, 500)
   }
 })
 
