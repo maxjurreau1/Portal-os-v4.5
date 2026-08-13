@@ -25,6 +25,9 @@
   ],
   "author": "maxjurreau",
   "license": "MIT",
+  "engines": {
+    "node": ">=24.18.0"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240620.0",
     "@jridgewell/sourcemap-codec": "^1.5.5",
