@@ -1,14 +1,14 @@
 // governance/admin.ts
-// Portal-OS v4.5 — Admin endpoints for governance
+// Portal-OS v4.5 — Admin endpoints for governance (KV-backed)
 // - GET  /admin/policies                 -> list registered policies and runtime knobs
-// - POST /admin/policies/block-workspaces -> set blocked workspaces
-// - POST /admin/policies/maintenance     -> set/clear maintenance window
-// - POST /admin/policies/tool-approval   -> toggle tool invocation approval requirement
+// - POST /admin/policies/block-workspaces -> set blocked workspaces (writes to KV)
+// - POST /admin/policies/maintenance     -> set/clear maintenance window (writes to KV)
+// - POST /admin/policies/tool-approval   -> toggle tool invocation approval requirement (writes to KV)
 // - GET  /admin/policies/audit-log       -> list recent governance.audit entries from SUBSTRATE_KV
 
 import { Router } from 'hono'
 import type { Env } from '../src/index'
-import { governance, policyRegistry, setBlockedWorkspaces, setMaintenanceWindow, setToolInvocationRequireApproval } from './policies'
+import { policyRegistry } from './policies'
 
 const admin = new Router()
 
@@ -26,40 +26,74 @@ admin.use('*', async (c, next) => {
 
 // GET /admin/policies
 admin.get('/policies', async (c) => {
+  const env = c.env as unknown as Env
   const list = policyRegistry.list().map((p) => ({ id: p.id, description: p.description, priority: p.priority }))
-  return c.json({ ok: true, policies: list, knobs: {
-    blockedWorkspaces: Array.from((governance as any).policyRegistry ? [] : []), // placeholder
-  }})
+
+  // Read current knobs from KV-backed config module
+  try {
+    const cfg = await import('./config')
+    const blocked = await cfg.getBlockedWorkspaces(env)
+    const maintenance = await cfg.getMaintenanceWindow(env)
+    const tool = await cfg.getToolInvocationRequireApproval(env)
+    return c.json({ ok: true, policies: list, knobs: { blockedWorkspaces: blocked, maintenance, tool } })
+  } catch (err) {
+    // Fall back to in-memory view if KV unavailable
+    return c.json({ ok: true, policies: list, knobs: { blockedWorkspaces: [], maintenance: null, tool: true }, warning: String(err) })
+  }
 })
 
 // POST /admin/policies/block-workspaces
 admin.post('/policies/block-workspaces', async (c) => {
+  const env = c.env as unknown as Env
   const body = await c.req.json().catch(() => null)
   if (!body || !Array.isArray(body.blocked)) return c.json({ ok: false, error: 'invalid body' }, 400)
-  setBlockedWorkspaces(body.blocked)
-  return c.json({ ok: true, blocked: body.blocked })
+  // Persist to KV and update in-memory
+  try {
+    const cfg = await import('./config')
+    await cfg.setBlockedWorkspacesKV(env, body.blocked)
+    return c.json({ ok: true, blocked: body.blocked })
+  } catch (err) {
+    return c.json({ ok: false, error: String(err) }, 500)
+  }
 })
 
 // POST /admin/policies/maintenance
 admin.post('/policies/maintenance', async (c) => {
+  const env = c.env as unknown as Env
   const body = await c.req.json().catch(() => null)
   if (!body) return c.json({ ok: false, error: 'invalid body' }, 400)
   const { startHour, endHour } = body
   if (startHour === null || endHour === null) {
-    setMaintenanceWindow(null as any, null as any)
-    return c.json({ ok: true, maintenance: null })
+    try {
+      const cfg = await import('./config')
+      await cfg.setMaintenanceWindowKV(env, null as any, null as any)
+      return c.json({ ok: true, maintenance: null })
+    } catch (err) {
+      return c.json({ ok: false, error: String(err) }, 500)
+    }
   }
   if (typeof startHour !== 'number' || typeof endHour !== 'number') return c.json({ ok: false, error: 'invalid hours' }, 400)
-  setMaintenanceWindow(startHour, endHour)
-  return c.json({ ok: true, maintenance: { startHour, endHour } })
+  try {
+    const cfg = await import('./config')
+    await cfg.setMaintenanceWindowKV(env, startHour, endHour)
+    return c.json({ ok: true, maintenance: { startHour, endHour } })
+  } catch (err) {
+    return c.json({ ok: false, error: String(err) }, 500)
+  }
 })
 
 // POST /admin/policies/tool-approval
 admin.post('/policies/tool-approval', async (c) => {
+  const env = c.env as unknown as Env
   const body = await c.req.json().catch(() => null)
   if (!body || typeof body.requireApproval !== 'boolean') return c.json({ ok: false, error: 'invalid body' }, 400)
-  setToolInvocationRequireApproval(body.requireApproval)
-  return c.json({ ok: true, requireApproval: body.requireApproval })
+  try {
+    const cfg = await import('./config')
+    await cfg.setToolInvocationRequireApprovalKV(env, body.requireApproval)
+    return c.json({ ok: true, requireApproval: body.requireApproval })
+  } catch (err) {
+    return c.json({ ok: false, error: String(err) }, 500)
+  }
 })
 
 // GET /admin/policies/audit-log
