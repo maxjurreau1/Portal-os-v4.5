@@ -92,6 +92,7 @@ export function createIdentitySyncProcess(evt: Event): Process {
     id,
     type: 'identity-sync',
     workspace,
++   criticality: 'medium',
     start,
     onEvent,
     stop,
