@@ -8,6 +8,11 @@
 import { eventBus, type Event } from './eventBus'
 
 /**
+ * Process criticality levels used by governance to make selective decisions.
+ */
+export type ProcessCriticality = 'critical' | 'medium' | 'non-critical'
+
+/**
  * A Process is a long-lived or short-lived unit of work
  * that reacts to events and may emit new events.
  */
@@ -15,6 +20,12 @@ export interface Process {
   id: string
   type: string
   workspace: string
+
+  // Optional runtime metadata
+  metadata?: Record<string, any>
+
+  // Optional criticality hint that governance uses to decide selective termination
+  criticality?: ProcessCriticality
 
   // Called when the process is started
   start(initialEvent?: Event): Promise<void>
@@ -48,6 +59,9 @@ export class ProcessManager {
   private processes: Map<string, Process> = new Map()
   private factories: Map<string, ProcessFactory> = new Map()
 
+  // Registry for process-type -> criticality mapping
+  private typeRegistry: Map<string, ProcessCriticality> = new Map()
+
   constructor() {
     // Subscribe to all events from the eventBus
     eventBus.on('*', async (evt) => {
@@ -78,6 +92,14 @@ export class ProcessManager {
   }
 
   /**
+   * Register a process type with a default criticality.
+   * Factories may still attach their own criticality on the returned Process.
+   */
+  registerProcessType(type: string, criticality: ProcessCriticality) {
+    this.typeRegistry.set(type, criticality)
+  }
+
+  /**
    * Handle incoming events:
    * - If a process already exists for this workspace + type, route event to it.
    * - Otherwise, create a new process via factory and start it.
@@ -99,6 +121,14 @@ export class ProcessManager {
     const proc = factory(evt)
     if (!proc) return
 
+    // Apply default criticality from registry if factory didn't provide one
+    if (!proc.criticality) {
+      const defaultCrit = this.typeRegistry.get(proc.type)
+      if (defaultCrit) {
+        proc.criticality = defaultCrit
+      }
+    }
+
     this.processes.set(key, proc)
 
     try {
@@ -106,7 +136,7 @@ export class ProcessManager {
       // Emit a lifecycle event for observability
       await eventBus.emit({
         name: 'process.started',
-        payload: { id: proc.id, type: proc.type },
+        payload: { id: proc.id, type: proc.type, criticality: proc.criticality ?? 'non-critical' },
         workspace: proc.workspace,
         timestamp: new Date().toISOString(),
       }, { persist: false })
@@ -164,7 +194,7 @@ export class ProcessManager {
       }
     }
     if (!proc) return null
-    return proc.status ? await proc.status() : { id: proc.id, type: proc.type, workspace: proc.workspace }
+    return proc.status ? await proc.status() : { id: proc.id, type: proc.type, workspace: proc.workspace, criticality: proc.criticality ?? 'non-critical' }
   }
 
   /**
@@ -178,10 +208,10 @@ export class ProcessManager {
   /**
    * List active processes (for admin / introspection)
    */
-  listActive(): Array<{ id: string; type: string; workspace: string }> {
-    const out: Array<{ id: string; type: string; workspace: string }> = []
+  listActive(): Array<{ id: string; type: string; workspace: string; criticality: ProcessCriticality }> {
+    const out: Array<{ id: string; type: string; workspace: string; criticality: ProcessCriticality }> = []
     for (const p of this.processes.values()) {
-      out.push({ id: p.id, type: p.type, workspace: p.workspace })
+      out.push({ id: p.id, type: p.type, workspace: p.workspace, criticality: p.criticality ?? 'non-critical' })
     }
     return out
   }
