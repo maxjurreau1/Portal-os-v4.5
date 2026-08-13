@@ -1,0 +1,7 @@
+name = "portal-os-v1"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[site]
+bucket = "./build"
+entry-point = "src"

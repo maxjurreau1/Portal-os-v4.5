@@ -1,0 +1,18 @@
+{
+  "name": "portal-os-deploy",
+  "version": "1.0.0",
+  "description": "Cloudflare deployment layer for Portal-OS v1",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "wrangler build"
+  },
+  "dependencies": {
+    "hono": "^4.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@cloudflare/workers-types": "^4.20240208.0",
+    "wrangler": "^3.0.0"
+  }
+}
