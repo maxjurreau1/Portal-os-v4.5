@@ -63,6 +63,28 @@ class PolicyRegistry {
 
 export const policyRegistry = new PolicyRegistry()
 
+// Runtime-configurable governance knobs (modifiable via admin tooling)
+const blockedWorkspaces = new Set<string>()
+let maintenanceWindow: { startHour: number; endHour: number } | null = null
+let toolInvocationRequireApproval = true
+
+export function setBlockedWorkspaces(list: string[]) {
+  blockedWorkspaces.clear()
+  for (const w of list) blockedWorkspaces.add(w)
+}
+
+export function setMaintenanceWindow(startHour: number, endHour: number | null) {
+  if (endHour === null) {
+    maintenanceWindow = null
+  } else {
+    maintenanceWindow = { startHour, endHour }
+  }
+}
+
+export function setToolInvocationRequireApproval(requireApproval: boolean) {
+  toolInvocationRequireApproval = requireApproval
+}
+
 // Keep original emit so audits and system events can bypass governance checks
 const originalEmit = eventBus.emit.bind(eventBus)
 
@@ -119,8 +141,7 @@ eventBus.emit = async function (evt: Event, opts: EmitOpts = { persist: true }) 
       timestamp: new Date().toISOString(),
     }, { persist: false })
 
-    // Return a rejected promise or simply short-circuit without delivering the original event
-    // For compatibility with eventBus.emit which returns Promise<void>, just resolve.
+    // Short-circuit: do not deliver the event
     return
   }
 
@@ -128,62 +149,77 @@ eventBus.emit = async function (evt: Event, opts: EmitOpts = { persist: true }) 
   return originalEmit(evt, opts)
 } as unknown as typeof eventBus.emit
 
-// Helper to register common policies
-export function registerAllowAllPolicy() {
-  policyRegistry.register({
-    id: 'allow-all',
-    description: 'Default allow-all policy for development',
-    priority: 1000,
-    callback: async () => ({ allowed: true }),
-  })
-}
+// --- Production policy examples ---
 
-// Example of a restrictive policy: prevent process starts for blocked workspaces
-export function registerWorkspaceBlockPolicy(blockedWorkspaces: string[]) {
-  policyRegistry.register({
-    id: 'workspace-block',
-    description: 'Blocks events originating from specified workspaces',
-    priority: 10,
-    callback: async (evt) => {
-      if (blockedWorkspaces.includes(evt.workspace || 'default')) {
-        return { allowed: false, reason: 'workspace_blocked', metadata: { workspace: evt.workspace } }
-      }
-      return { allowed: true }
-    },
-  })
-}
+// 1) Workspace block policy (reads from blockedWorkspaces set)
+policyRegistry.register({
+  id: 'workspace-block',
+  description: 'Blocks events originating from configured blocked workspaces',
+  priority: 10,
+  callback: async (evt) => {
+    const ws = evt.workspace || 'default'
+    if (blockedWorkspaces.has(ws)) {
+      return { allowed: false, reason: 'workspace_blocked', metadata: { workspace: ws } }
+    }
+    return { allowed: true }
+  },
+})
 
-// Policy that can be used to intercept process.start intentions — example based on event.name
-export function registerProcessStartGuard() {
-  policyRegistry.register({
-    id: 'process-start-guard',
-    description: 'Guard process starts: apply checks before processes are created',
-    priority: 20,
-    callback: async (evt) => {
-      // If the event is trying to start a process (we use event names that are mapped to processes),
-      // perform a lightweight check. This is an example; customize per your governance model.
-      if (evt.name.startsWith('sim.') || evt.name.startsWith('tec.')) {
-        // Example rule: don't allow process starts during a maintenance window
-        const hour = new Date().getUTCHours()
-        const inMaintenance = false // replace with real schedule check
-        if (inMaintenance) {
-          return { allowed: false, reason: 'maintenance_mode', metadata: { hour } }
-        }
-      }
-      return { allowed: true }
-    },
-  })
-}
+// 2) Maintenance window guard: prevents process-like events during maintenance
+policyRegistry.register({
+  id: 'maintenance-window-guard',
+  description: 'Prevents process starts during configured maintenance window',
+  priority: 20,
+  callback: async (evt) => {
+    if (!maintenanceWindow) return { allowed: true }
+    // Only guard events that are likely to start processes
+    const processCandidate = evt.name.startsWith('sim.') || evt.name.startsWith('tec.') || evt.name.startsWith('process.')
+    if (!processCandidate) return { allowed: true }
 
-// Initialize default policies for development (allow all) — consumers should replace this with stricter policies
-registerAllowAllPolicy()
+    const hour = new Date().getUTCHours()
+    const { startHour, endHour } = maintenanceWindow
+    const inWindow = startHour <= endHour ? hour >= startHour && hour < endHour : hour >= startHour || hour < endHour
+    if (inWindow) return { allowed: false, reason: 'maintenance_window', metadata: { startHour, endHour, hour } }
+    return { allowed: true }
+  },
+})
 
-// Expose API for admin tooling
+// 3) Tool invocation guard: require explicit approval in meta for tec.tool.invoked
+policyRegistry.register({
+  id: 'tool-invocation-approval',
+  description: 'Require explicit approval for tool invocations from untrusted sources',
+  priority: 30,
+  callback: async (evt) => {
+    if (evt.name !== 'tec.tool.invoked') return { allowed: true }
+
+    // If global flag disabled, allow
+    if (!toolInvocationRequireApproval) return { allowed: true }
+
+    // If event contains meta.approved === true, allow; otherwise deny
+    const approved = (evt.meta && (evt.meta as any).approved) === true
+    if (!approved) return { allowed: false, reason: 'tool_invocation_not_approved' }
+    return { allowed: true }
+  },
+})
+
+// 4) Example logging policy: low-priority annotator that always allows and adds metadata
+policyRegistry.register({
+  id: 'annotate-event',
+  description: 'Annotates events with governance metadata for auditing',
+  priority: 100,
+  callback: async (evt) => {
+    // This policy is intentionally side-effect-free; it returns metadata that will be
+    // recorded in the governance.audit payload.
+    return { allowed: true, metadata: { governedAt: new Date().toISOString() } }
+  },
+})
+
+// Expose API for admin tooling and configuration
 export const governance = {
   policyRegistry,
-  registerAllowAllPolicy,
-  registerWorkspaceBlockPolicy,
-  registerProcessStartGuard,
+  setBlockedWorkspaces,
+  setMaintenanceWindow,
+  setToolInvocationRequireApproval,
 }
 
 // Integration notes (how to use):
@@ -191,4 +227,3 @@ export const governance = {
 //   Example in src/index.ts middleware: `import './governance/policies'` or dynamic import.
 // - To bypass governance for system-internal events (audits, health checks), callers can set evt.meta.__bypass_governance = true
 // - Policies should be idempotent, fast, and side-effect free where possible. Use audits for recording decisions.
-
