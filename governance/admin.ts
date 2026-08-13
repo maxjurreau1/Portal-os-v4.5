@@ -6,11 +6,12 @@
 // - POST /admin/policies/tool-approval   -> toggle tool invocation approval requirement (writes to KV)
 // - GET  /admin/policies/audit-log       -> list recent governance.audit entries from SUBSTRATE_KV
 // - GET  /admin/policies/criticality     -> list canonical criticality mappings + runtime overrides
+// - POST /admin/policies/criticality/override -> register a runtime override (persist to KV + audit)
 
 import { Router } from 'hono'
 import type { Env } from '../src/index'
 import { policyRegistry } from './policies'
-import { listMappings } from './criticalityRegistry'
+import { listMappings, registerOverride } from './criticalityRegistry'
 
 const admin = new Router()
 
@@ -52,6 +53,42 @@ admin.get('/policies/criticality', async (c) => {
   } catch (err) {
     return c.json({ ok: false, error: String(err) }, 500)
   }
+})
+
+// POST /admin/policies/criticality/override
+// Body: { type: string, criticality: 'critical'|'medium'|'non-critical' }
+// This registers a runtime override in the in-memory registry and persists an audit entry to SUBSTRATE_KV when available.
+admin.post('/policies/criticality/override', async (c) => {
+  const env = c.env as unknown as Env
+  const body = await c.req.json().catch(() => null)
+  if (!body || typeof body.type !== 'string' || typeof body.criticality !== 'string') return c.json({ ok: false, error: 'invalid body' }, 400)
+  const { type, criticality } = body as { type: string; criticality: 'critical' | 'medium' | 'non-critical' }
+  if (!['critical', 'medium', 'non-critical'].includes(criticality)) return c.json({ ok: false, error: 'invalid criticality' }, 400)
+
+  // Register in-memory override immediately
+  try {
+    registerOverride(type, criticality as any)
+  } catch (err) {
+    return c.json({ ok: false, error: 'failed to register override: ' + String(err) }, 500)
+  }
+
+  // Persist audit entry to SUBSTRATE_KV if bound
+  if (env.SUBSTRATE_KV) {
+    try {
+      const ts = new Date().toISOString()
+      const key = `gov:config:criticality:override:${encodeURIComponent(type)}:${ts}`
+      await env.SUBSTRATE_KV.put(key, JSON.stringify({ action: 'registerOverride', type, criticality, ts }))
+      // also store a compact mapping entry for quick lookup (optional)
+      try {
+        await env.SUBSTRATE_KV.put(`gov:config:criticality:overrides`, JSON.stringify({ type, criticality, ts }))
+      } catch (_) {}
+    } catch (err) {
+      // Non-fatal: return success but include warning
+      return c.json({ ok: true, warning: 'override registered in-memory but failed to persist audit: ' + String(err), type, criticality })
+    }
+  }
+
+  return c.json({ ok: true, type, criticality })
 })
 
 // POST /admin/policies/block-workspaces
