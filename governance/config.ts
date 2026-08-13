@@ -8,6 +8,7 @@ import type { Env } from '../src/index'
 const KEY_BLOCKED = 'gov:config:block-workspaces'
 const KEY_MAINT = 'gov:config:maintenance-window'
 const KEY_TOOL = 'gov:config:tool-approval'
+const KEY_STRICT_MAINT = 'gov:config:maintenance-strict'
 
 // Helpers to read/write to SUBSTRATE_KV
 export async function getBlockedWorkspaces(env: Env): Promise<string[]> {
@@ -83,6 +84,26 @@ export async function setToolInvocationRequireApprovalKV(env: Env, requireApprov
   setToolInvocationRequireApproval(requireApproval)
   try {
     await eventBus.emit({ name: 'governance.config.updated', payload: { key: 'toolInvocationRequireApproval', value: requireApproval }, workspace: 'default', timestamp: new Date().toISOString(), meta: { __bypass_governance: true } as any }, { persist: false })
+  } catch (_) {}
+}
+
+export async function getStrictMaintenanceFlag(env: Env): Promise<boolean> {
+  if (!env.SUBSTRATE_KV) return false
+  const raw = await env.SUBSTRATE_KV.get(KEY_STRICT_MAINT)
+  if (!raw) return false
+  try { return JSON.parse(raw) as boolean } catch { return false }
+}
+
+export async function setStrictMaintenanceFlagKV(env: Env, v: boolean): Promise<void> {
+  if (env.SUBSTRATE_KV) {
+    await env.SUBSTRATE_KV.put(KEY_STRICT_MAINT, JSON.stringify(v))
+    try {
+      const ts = new Date().toISOString()
+      await env.SUBSTRATE_KV.put(`audit:config:maintenance-strict:${ts}`, JSON.stringify({ action: 'setStrictMaintenance', v, ts }))
+    } catch (_) {}
+  }
+  try {
+    await eventBus.emit({ name: 'governance.config.updated', payload: { key: 'maintenanceStrict', value: v }, workspace: 'default', timestamp: new Date().toISOString(), meta: { __bypass_governance: true } as any }, { persist: false })
   } catch (_) {}
 }
 
