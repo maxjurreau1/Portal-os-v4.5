@@ -81,6 +81,37 @@ app.use('*', async (c, next) => {
         // swallow
       }
     }
+
+    // Ensure reactive governance listeners are registered before loading config
+    try {
+      await import('./governance/reactive')
+    } catch (err) {
+      try {
+        await eventBus.emit({
+          name: 'governance.reactive.load.failed',
+          payload: { error: String(err) },
+          workspace: 'default',
+          timestamp: new Date().toISOString(),
+          meta: { __bypass_governance: true } as any,
+        }, { persist: false })
+      } catch (_) {}
+    }
+
+    // Load durable governance config once per worker instance
+    try {
+      await import('./governance/config').then(m => m.loadGovernanceConfig(env as unknown as any))
+    } catch (err) {
+      // non-fatal: emit warning so operators see the problem
+      try {
+        await eventBus.emit({
+          name: 'governance.config.load.failed',
+          payload: { error: String(err) },
+          workspace: 'default',
+          timestamp: new Date().toISOString(),
+          meta: { __bypass_governance: true } as any,
+        }, { persist: false })
+      } catch (_) {}
+    }
   }
 
   await next()
