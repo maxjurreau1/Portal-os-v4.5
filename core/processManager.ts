@@ -6,6 +6,7 @@
 // - Map events to Process factories
 
 import { eventBus, type Event } from './eventBus'
+import { getCriticalityForType } from '../governance/criticalityRegistry'
 
 /**
  * Process criticality levels used by governance to make selective decisions.
@@ -59,7 +60,7 @@ export class ProcessManager {
   private processes: Map<string, Process> = new Map()
   private factories: Map<string, ProcessFactory> = new Map()
 
-  // Registry for process-type -> criticality mapping
+  // Registry for process-type -> criticality mapping (local overrides)
   private typeRegistry: Map<string, ProcessCriticality> = new Map()
 
   constructor() {
@@ -121,19 +122,19 @@ export class ProcessManager {
     const proc = factory(evt)
     if (!proc) return
 
-    // Apply default criticality from registry if factory didn't provide one
+    // Apply default criticality:
+    // Prefer central registry; fall back to local typeRegistry if it exists; final fallback is 'non-critical'.
     if (!proc.criticality) {
-      const defaultCrit = this.typeRegistry.get(proc.type)
-      if (defaultCrit) {
-        proc.criticality = defaultCrit
-      }
+      const central = getCriticalityForType(proc.type)
+      const local = this.typeRegistry.get(proc.type)
+      proc.criticality = local ?? central ?? 'non-critical'
     }
 
     this.processes.set(key, proc)
 
     try {
       await proc.start(evt)
-      // Emit a lifecycle event for observability
+      // Emit a lifecycle event for observability, include criticality
       await eventBus.emit({
         name: 'process.started',
         payload: { id: proc.id, type: proc.type, criticality: proc.criticality ?? 'non-critical' },
@@ -214,6 +215,19 @@ export class ProcessManager {
       out.push({ id: p.id, type: p.type, workspace: p.workspace, criticality: p.criticality ?? 'non-critical' })
     }
     return out
+  }
+
+  /**
+   * Test/debug helper: clear all processes and factories (safe no-op in prod).
+   * Useful for unit tests to ensure isolation.
+   */
+  resetForTests() {
+    for (const [k, p] of this.processes) {
+      try { p.stop('reset') } catch (_) {}
+    }
+    this.processes.clear()
+    this.factories.clear()
+    this.typeRegistry.clear()
   }
 }
 
