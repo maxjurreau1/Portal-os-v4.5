@@ -3,11 +3,14 @@ import defaultExport from './index'
 import { boot as simBoot } from './sim/boot'
 import { eventBus } from './core/eventBus'
 import { SubstrateDOPublisher } from './substrate/events'
+import { adminRouter } from './governance/admin'
 
 export interface Env {
   SUBSTRATE_DO: DurableObjectNamespace
   SUBSTRATE_KV: KVNamespace
   RUNTIME_KV: KVNamespace
+  // Optional admin secret for admin endpoints
+  SUBSTRATE_ADMIN_SECRET?: string
 }
 
 export class SubstrateDO implements DurableObject {
@@ -92,6 +95,9 @@ app.get('/_internal/sim/boot', async (c) => {
 
   return c.json({ ok: true, workspace })
 })
+
+// Admin routes (governance)
+app.route('/admin', adminRouter)
 
 // Existing routes: delegate to original default export for compatibility
 app.get('/', async (c) => {
