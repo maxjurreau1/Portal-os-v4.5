@@ -1,3 +1,9 @@
+import { Hono } from 'hono'
+import defaultExport from './index'
+import { boot as simBoot } from './sim/boot'
+import { eventBus } from './core/eventBus'
+import { SubstrateDOPublisher } from './substrate/events'
+
 export interface Env {
   SUBSTRATE_DO: DurableObjectNamespace
   SUBSTRATE_KV: KVNamespace
@@ -31,6 +37,13 @@ export class SubstrateDO implements DurableObject {
       )
     }
 
+    // Wire the ingest endpoint to the DO handler if present
+    if (url.pathname === '/ingest' && request.method === 'POST') {
+      // Importing here avoids circular module resolution at startup in Workers
+      const mod = await import('./substrate/events')
+      return await mod.handleIngest(request, this.state, this.env as unknown as any)
+    }
+
     return new Response(
       JSON.stringify({ error: 'Not Found', status: 404 }),
       {
@@ -41,180 +54,53 @@ export class SubstrateDO implements DurableObject {
   }
 }
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url)
+const app = new Hono()
 
-    // Substrate Durable Object proxy
-    if (url.pathname.startsWith('/substrate')) {
-      const id = env.SUBSTRATE_DO.idFromName('default')
-      const stub = env.SUBSTRATE_DO.get(id)
-      return stub.fetch(request)
-    }
+// Safe lazy attach: Workers reuse module scope but env is only available in request context.
+// Use a runtime guard to attach the publisher once per worker instance.
+app.use('*', async (c, next) => {
+  const env = c.env as unknown as Env
 
-    // API endpoint for runtime ping
-    if (url.pathname === '/api/ping' && request.method === 'POST') {
-      return new Response(
-        JSON.stringify({
-          status: 'ok',
-          message: 'Runtime pinged. Portal-OS v4.4 responding.',
+  if (!(eventBus as any).__v45_publisher_attached) {
+    try {
+      eventBus.attachPersistentPublisher(new SubstrateDOPublisher(env))
+      ;(eventBus as any).__v45_publisher_attached = true
+    } catch (err) {
+      // Emit a non-persistent warning so operators see the issue without blocking requests
+      try {
+        await eventBus.emit({
+          name: 'sim.boot.warn',
+          payload: { warning: 'failed to attach SubstrateDOPublisher', error: String(err) },
+          workspace: 'default',
           timestamp: new Date().toISOString(),
-        }),
-        {
-          headers: { 'Content-Type': 'application/json' },
-          status: 200,
-        }
-      )
-    }
-
-    // Health check endpoint
-    if (url.pathname === '/health') {
-      return new Response(
-        JSON.stringify({
-          status: 'healthy',
-          service: 'Portal-OS v4.4',
-          version: '4.4.0',
-          timestamp: new Date().toISOString(),
-        }),
-        {
-          headers: { 'Content-Type': 'application/json' },
-          status: 200,
-        }
-      )
-    }
-
-    // Main index page
-    if (url.pathname === '/') {
-      const html = `
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Portal-OS v4.4</title>
-          <style>
-            body {
-              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-              margin: 0;
-              padding: 20px;
-              background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-              min-height: 100vh;
-              display: flex;
-              align-items: center;
-              justify-content: center;
-            }
-            .container {
-              background: white;
-              border-radius: 10px;
-              box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-              padding: 40px;
-              max-width: 600px;
-              text-align: center;
-            }
-            h1 {
-              color: #333;
-              margin: 0 0 10px 0;
-            }
-            .version {
-              color: #666;
-              font-size: 14px;
-              margin-bottom: 30px;
-            }
-            .status {
-              display: inline-block;
-              background: #10b981;
-              color: white;
-              padding: 10px 20px;
-              border-radius: 20px;
-              font-size: 14px;
-              font-weight: 600;
-              margin-bottom: 20px;
-            }
-            .endpoint {
-              background: #f3f4f6;
-              border-left: 4px solid #667eea;
-              padding: 15px;
-              margin: 10px 0;
-              text-align: left;
-              border-radius: 4px;
-              font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-              font-size: 12px;
-            }
-            .endpoint-method {
-              color: #667eea;
-              font-weight: 600;
-            }
-            .endpoint-path {
-              color: #333;
-            }
-            .endpoints-section {
-              text-align: left;
-              margin-top: 30px;
-              border-top: 2px solid #eee;
-              padding-top: 20px;
-            }
-            .endpoints-section h3 {
-              color: #333;
-              margin: 0 0 15px 0;
-              text-align: center;
-            }
-            .security-note {
-              background: #fef3c7;
-              border-left: 4px solid #f59e0b;
-              padding: 15px;
-              margin-top: 20px;
-              border-radius: 4px;
-              font-size: 12px;
-              color: #92400e;
-            }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <h1>🌐 Portal-OS v4.4</h1>
-            <p class="version">Multi-domain operating substrate on Cloudflare</p>
-            <div class="status">✓ Online & Responding</div>
-            
-            <div class="endpoints-section">
-              <h3>Available Endpoints</h3>
-              <div class="endpoint">
-                <span class="endpoint-method">GET</span>
-                <span class="endpoint-path">/</span> - This page
-              </div>
-              <div class="endpoint">
-                <span class="endpoint-method">GET</span>
-                <span class="endpoint-path">/health</span> - Service health check
-              </div>
-              <div class="endpoint">
-                <span class="endpoint-method">POST</span>
-                <span class="endpoint-path">/api/ping</span> - Runtime ping
-              </div>
-              <div class="endpoint">
-                <span class="endpoint-method">GET</span>
-                <span class="endpoint-path">/substrate/status</span> - Substrate Durable Object status
-              </div>
-            </div>
-
-            <div class="security-note">
-              ✓ Dependencies secured and deployed on ${new Date().toISOString().split('T')[0]}
-            </div>
-          </div>
-        </body>
-        </html>
-      `
-      return new Response(html, {
-        headers: { 'Content-Type': 'text/html;charset=UTF-8' },
-        status: 200,
-      })
-    }
-
-    // 404 handler
-    return new Response(
-      JSON.stringify({ error: 'Not Found', status: 404 }),
-      {
-        headers: { 'Content-Type': 'application/json' },
-        status: 404,
+        }, { persist: false })
+      } catch (_) {
+        // swallow
       }
-    )
-  },
-}
+    }
+  }
+
+  await next()
+})
+
+// Internal boot route (deterministic activation)
+app.get('/_internal/sim/boot', async (c) => {
+  const env = c.env as unknown as Env
+  const workspace = c.req.query('workspace') || 'default'
+
+  await simBoot(env as unknown as any, { workspace })
+
+  return c.json({ ok: true, workspace })
+})
+
+// Existing routes: delegate to original default export for compatibility
+app.get('/', async (c) => {
+  // Delegate to the original module's fetch handler
+  const req = c.req as unknown as Request
+  const resp = await (defaultExport as any).fetch(req, c.env)
+  return resp
+})
+
+app.get('/health', (c) => c.json({ status: 'healthy', service: 'Portal-OS v4.5', timestamp: new Date().toISOString() }))
+
+export default app
