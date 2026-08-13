@@ -4,6 +4,8 @@ import { boot as simBoot } from './sim/boot'
 import { eventBus } from './core/eventBus'
 import { SubstrateDOPublisher } from './substrate/events'
 import { adminRouter } from './governance/admin'
+import { processManager } from './core/processManager'
+import { listMappings } from './governance/criticalityRegistry'
 
 export interface Env {
   SUBSTRATE_DO: DurableObjectNamespace
@@ -112,6 +114,22 @@ app.use('*', async (c, next) => {
         }, { persist: false })
       } catch (_) {}
     }
+
+    // Register canonical criticality mappings into the processManager type registry
+    try {
+      const { canonical } = listMappings()
+      for (const [typePattern, crit] of Object.entries(canonical)) {
+        // register only exact mappings (skip prefix entries that end with '.')
+        if (!typePattern.endsWith('.')) {
+          processManager.registerProcessType(typePattern, crit as any)
+        }
+      }
+    } catch (err) {
+      try {
+        await eventBus.emit({ name: 'processManager.register.defaults.failed', payload: { error: String(err) }, workspace: 'default', timestamp: new Date().toISOString() }, { persist: false })
+      } catch (_) {}
+    }
+
   }
 
   await next()
