@@ -37,5 +37,8 @@
     "wrangler": "^4.3.0",
     "vitest": "^1.6.0"
   },
-  "dependencies": {}
+  "dependencies": {
+  "hono": "^4.0.0"
+}
+
 }
